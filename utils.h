@@ -33,6 +33,10 @@ void serve_withdraw(int client_sd, struct Message *request);
 void serve_transfer(int client_sd, struct Message *request); 
 void serve_add_customer(int client_sd, struct Message *request); // <-- NEW
 void serve_modify_customer(int client_sd, struct Message *request);
+void serve_apply_loan(int client_sd, struct Message *request);
+void serve_process_loan(int client_sd, struct Message *request);
+void serve_view_loan_status(int client_sd, struct Message *request);
+void serve_view_assigned_loans(int client_sd, struct Message *request);
 
 // --- General Utilities ---
 ssize_t sys_write_string(const char *s);

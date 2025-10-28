@@ -9,6 +9,12 @@
 #define MANAGER 3
 #define ADMINISTRATOR 4
 
+// Loan Status Definitions
+#define LOAN_APPLIED 1
+#define LOAN_PROCESSED 2
+#define LOAN_APPROVED 3
+#define LOAN_REJECTED 4
+
 // User Status
 #define ACTIVE 1
 #define DEACTIVATED 0
@@ -56,6 +62,17 @@ struct Message {
     int success_status; // 1 for success, 0 for failure
 };
 
+// Structure for Loan Applications
+struct Loan {
+    int id;               // Unique Loan ID
+    int customer_id;      // ID of the customer applying
+    double amount;
+    int tenure_months;
+    int status;           // 1: Applied, 2: Processed, 3: Approved, 4: Rejected
+    int processed_by_id;  // Employee ID who processed/approved the loan
+};
+
+
 // Command definitions
 #define CMD_LOGIN 1
 #define CMD_VIEW_BALANCE 2
@@ -64,6 +81,10 @@ struct Message {
 #define CMD_TRANSFER 5 
 #define CMD_ADD_CUSTOMER 6 // <-- NEW
 #define CMD_MODIFY_CUSTOMER 7
+#define CMD_APPLY_LOAN 8        // Customer Option 5
+#define CMD_VIEW_LOAN_STATUS 9  // Customer Option (New - for applied loans)
+#define CMD_PROCESS_LOAN 10     // Employee Option 3/4
+#define CMD_VIEW_ASSIGNED_LOANS 11 // Employee Option 5
 #define CMD_LOGOUT 99
 
 // Global variables for the current session (Declared here, Defined in utils.c)

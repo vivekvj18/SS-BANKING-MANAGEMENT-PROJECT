@@ -7,14 +7,14 @@
 #include <stdio.h>      // For standard I/O (TEMPORARY), perror, sprintf
 #include <sys/socket.h> // For socket structures
 #include <sys/types.h>  // For off_t, pid_t, ssize_t, size_t
+#include <errno.h>      // For errno, EACCES, ENOENT
 #include "utils.h"
 #include "structs.h" 
 
 // ====================================================================
 // GLOBAL VARIABLE DEFINITION
-// Defined once here.
 // ====================================================================
-struct User current_user = {}; // Using {} for C++ style zero initialization
+struct User current_user = {};
 
 
 // ====================================================================
@@ -78,18 +78,23 @@ int sys_unlock_record(int fd, int record_index) {
 // Helper function to find the next available ID by counting records
 int get_next_id(const char *filename, size_t struct_size) {
     int fd = sys_open(filename, O_RDONLY);
-    if (fd == -1) return 1; // Assume ID 1 if file doesn't exist
+    if (fd == -1) return 1;
 
     int count = 0;
     char buffer[struct_size];
     
-    // FIX: Cast sys_read return value to size_t to prevent signed/unsigned warning
     while ((size_t)sys_read(fd, buffer, struct_size) == struct_size) { 
         count++;
     }
     sys_close(fd);
     return count + 1;
 }
+
+// Helper function for loans, uses the generic ID finder
+int get_next_loan_id() {
+    return get_next_id("loans.dat", sizeof(struct Loan));
+}
+
 
 int authenticate_and_set_user(char *username, char *password, int expected_role) {
     int fd = sys_open("users.dat", O_RDONLY);
@@ -148,8 +153,8 @@ void print_menu(int role) {
             sys_write_string("3. Withdraw Money\n"); 
             sys_write_string("4. Transfer Funds\n"); 
             sys_write_string("5. Apply for a Loan\n"); 
-            sys_write_string("6. Add Feedback\n"); 
-            sys_write_string("7. View Transaction History\n"); 
+            sys_write_string("6. View Loan Status\n"); 
+            sys_write_string("7. View Transaction History / Add Feedback\n"); 
             sys_write_string("8. Change Password\n"); 
             sys_write_string("9. Logout\n"); 
             sys_write_string("10. Exit\n"); 
@@ -306,51 +311,43 @@ void serve_transfer(int client_sd, struct Message *request) {
     }
 
     // --- Critical Section: Dual Locking ---
-    // Acquire locks in a consistent order (lower ID first) to prevent Deadlock.
     int id1 = (source_id < target_id) ? source_id : target_id;
     int id2 = (source_id < target_id) ? target_id : source_id;
 
-    if (sys_lock_record(fd, id1, F_WRLCK) == 0) { // Lock first record
-        if (sys_lock_record(fd, id2, F_WRLCK) == 0) { // Lock second record
+    if (sys_lock_record(fd, id1, F_WRLCK) == 0) {
+        if (sys_lock_record(fd, id2, F_WRLCK) == 0) {
 
             struct Account source_acc, target_acc;
             off_t offset_source = (source_id - 1) * sizeof(struct Account);
             off_t offset_target = (target_id - 1) * sizeof(struct Account);
 
-            // 1. Read Source Account
             sys_lseek(fd, offset_source, SEEK_SET);
             if (sys_read(fd, &source_acc, sizeof(struct Account)) != sizeof(struct Account)) goto unlock_and_fail;
 
-            // 2. Read Target Account
             sys_lseek(fd, offset_target, SEEK_SET);
             if (sys_read(fd, &target_acc, sizeof(struct Account)) != sizeof(struct Account)) goto unlock_and_fail;
 
-            // 3. Consistency Check (Sufficient Funds)
             if (source_acc.balance >= amount) {
-                // 4. Modify
                 source_acc.balance -= amount;
                 target_acc.balance += amount;
 
-                // 5. Write Source Account
                 sys_lseek(fd, offset_source, SEEK_SET);
                 sys_write(fd, &source_acc, sizeof(struct Account));
 
-                // 6. Write Target Account
                 sys_lseek(fd, offset_target, SEEK_SET);
                 sys_write(fd, &target_acc, sizeof(struct Account));
                 
-                // Success
                 response.success_status = 1;
-                response.account_data = source_acc; // Send back new source balance
+                response.account_data = source_acc;
                 strcpy(response.data, "Transfer successful.");
             } else {
                 strcpy(response.data, "Insufficient funds in source account.");
             }
 
-            unlock_and_fail:; // Label for cleanup
-            sys_unlock_record(fd, id2); // Unlock second record
+            unlock_and_fail:;
+            sys_unlock_record(fd, id2);
         }
-        sys_unlock_record(fd, id1); // Unlock first record
+        sys_unlock_record(fd, id1);
     }
     
     sys_close(fd);
@@ -364,31 +361,25 @@ void serve_add_customer(int client_sd, struct Message *request) {
     response.success_status = 0; 
     strcpy(response.data, "Customer creation failed.");
 
-    // Parse data: Username is stored in data[0], Password in data[MAX_NAME_LEN]
     char *username = request->data;
     char *password = request->data + MAX_NAME_LEN;
     
-    // 1. Get New ID
     int new_id = get_next_id("users.dat", sizeof(struct User));
 
-    // 2. Create User Record (using {} for safe C++ zero-initialization)
     struct User new_customer = {};
     new_customer.id = new_id;
     new_customer.role = CUSTOMER;
     strcpy(new_customer.username, username);
     strcpy(new_customer.password, password);
-    // Placeholder details (these would normally come from the client request)
     strcpy(new_customer.name, "New Client");
     new_customer.age = 30;
     strcpy(new_customer.address, "Pending Address");
     
-    // 3. Create Account Record
     struct Account new_account = {};
     new_account.id = new_id;
     new_account.balance = 0.00;
     new_account.status = ACTIVE;
 
-    // Use O_CREAT to ensure the file is created if it doesn't exist.
     int fd_u = sys_open("users.dat", O_WRONLY | O_APPEND | O_CREAT);
     int fd_a = sys_open("accounts.dat", O_WRONLY | O_APPEND | O_CREAT);
 
@@ -402,7 +393,14 @@ void serve_add_customer(int client_sd, struct Message *request) {
              strcpy(response.data, "Error writing data to files.");
         }
     } else {
-        strcpy(response.data, "File access error during creation.");
+        // Detailed error reporting
+        if (fd_u == -1) {
+             sprintf(response.data, "User file access error. Errno: %d", errno);
+        } else if (fd_a == -1) {
+             sprintf(response.data, "Account file access error. Errno: %d", errno);
+        } else {
+             strcpy(response.data, "File access error during creation.");
+        }
     }
 
     if (fd_u != -1) sys_close(fd_u);
@@ -421,7 +419,6 @@ void serve_modify_customer(int client_sd, struct Message *request) {
     
     int target_id = request->target_id;
     
-    // Data layout: [Name\0][Age\0][Address\0]
     char *new_name = request->data;
     char *new_age_str = request->data + MAX_NAME_LEN;
     char *new_address = request->data + MAX_NAME_LEN + 10; 
@@ -435,25 +432,19 @@ void serve_modify_customer(int client_sd, struct Message *request) {
 
     off_t offset = (target_id - 1) * sizeof(struct User);
 
-    // Acquire Write Lock on the specific user record
-    // NOTE: Locking on the User record is necessary since we modify the User file.
     if (sys_lock_record(fd_u, target_id, F_WRLCK) == 0) { 
 
         struct User user_record;
         
-        // 1. Read existing record
         sys_lseek(fd_u, offset, SEEK_SET);
         if (sys_read(fd_u, &user_record, sizeof(struct User)) == sizeof(struct User)) {
 
-            // 2. Check if the user is a CUSTOMER 
             if (user_record.role == CUSTOMER) {
                 
-                // 3. Modify fields
                 strcpy(user_record.name, new_name);
                 user_record.age = atoi(new_age_str); 
                 strcpy(user_record.address, new_address);
 
-                // 4. Write modified record back
                 sys_lseek(fd_u, offset, SEEK_SET);
                 if (sys_write(fd_u, &user_record, sizeof(struct User)) == sizeof(struct User)) {
                     response.success_status = 1;
@@ -466,7 +457,6 @@ void serve_modify_customer(int client_sd, struct Message *request) {
              strcpy(response.data, "Customer ID not found or file error.");
         }
         
-        // 5. Release Lock
         sys_unlock_record(fd_u, target_id);
 
     } else {
@@ -474,5 +464,169 @@ void serve_modify_customer(int client_sd, struct Message *request) {
     }
     
     sys_close(fd_u);
+    sys_write(client_sd, &response, sizeof(struct Message));
+}
+
+// --- 7. Apply for a Loan (Customer Function) ---
+void serve_apply_loan(int client_sd, struct Message *request) {
+    struct Message response;
+    response.command = CMD_APPLY_LOAN;
+    response.success_status = 0; 
+    strcpy(response.data, "Loan application failed.");
+
+    int customer_id = request->source_id;
+    double amount = request->amount;
+    int tenure = request->target_id;
+    
+    int new_loan_id = get_next_loan_id();
+
+    struct Loan new_loan = {};
+    new_loan.id = new_loan_id;
+    new_loan.customer_id = customer_id;
+    new_loan.amount = amount;
+    new_loan.tenure_months = tenure;
+    new_loan.status = LOAN_APPLIED;
+    new_loan.processed_by_id = 0; 
+    
+    int fd_l = sys_open("loans.dat", O_WRONLY | O_APPEND | O_CREAT);
+
+    if (fd_l != -1) {
+        if (sys_write(fd_l, &new_loan, sizeof(struct Loan)) == sizeof(struct Loan)) {
+            response.success_status = 1;
+            sprintf(response.data, "Loan application submitted. ID: %d", new_loan_id);
+        } else {
+             strcpy(response.data, "Error writing loan data.");
+        }
+    } else {
+        // Detailed error reporting
+        if (errno == EACCES) { 
+             strcpy(response.data, "Permission denied to open loan file.");
+        } else if (errno == ENOENT) {
+             strcpy(response.data, "File path not found.");
+        } else {
+             sprintf(response.data, "Loan file access error. Errno: %d", errno);
+        }
+    }
+
+    if (fd_l != -1) sys_close(fd_l);
+    sys_write(client_sd, &response, sizeof(struct Message));
+}
+
+// --- 8. View Loan Status (Customer Function) ---
+void serve_view_loan_status(int client_sd, struct Message *request) {
+    struct Message response;
+    response.command = CMD_VIEW_LOAN_STATUS;
+    response.success_status = 0; 
+    strcpy(response.data, "No active loan applications found.");
+
+    int customer_id = request->source_id;
+    int fd_l = sys_open("loans.dat", O_RDONLY);
+    
+    if (fd_l != -1) {
+        struct Loan loan;
+        while (sys_read(fd_l, &loan, sizeof(struct Loan)) == sizeof(struct Loan)) {
+            if (loan.customer_id == customer_id) {
+                char status_str[50];
+                if (loan.status == LOAN_APPLIED) strcpy(status_str, "APPLIED (Pending)");
+                else if (loan.status == LOAN_PROCESSED) strcpy(status_str, "PROCESSED (Awaiting Final Approval)");
+                else if (loan.status == LOAN_APPROVED) strcpy(status_str, "APPROVED");
+                else strcpy(status_str, "REJECTED");
+                
+                sprintf(response.data, "Loan ID %d, Amount %.2f: Status: %s", 
+                        loan.id, loan.amount, status_str);
+                response.success_status = 1;
+                break; 
+            }
+        }
+        sys_close(fd_l);
+    }
+    sys_write(client_sd, &response, sizeof(struct Message));
+}
+
+// --- 9. Process/Approve/Reject Loan (Employee Function) ---
+void serve_process_loan(int client_sd, struct Message *request) {
+    // DECLARE ALL LOCAL VARIABLES AT THE START TO AVOID ILLEGAL JUMPS
+    struct Message response;
+    int employee_id = request->source_id;
+    int loan_id = request->target_id;
+    int action = (int)request->amount;
+    int fd_l = -1; // Initialize fd_l here
+    off_t offset;
+    struct Loan loan_record;
+
+    response.command = CMD_PROCESS_LOAN;
+    response.success_status = 0;
+    strcpy(response.data, "Loan processing failed.");
+    
+    fd_l = sys_open("loans.dat", O_RDWR);
+    if (fd_l == -1) { 
+        goto write_response_and_close; 
+    } 
+
+    offset = (loan_id - 1) * sizeof(struct Loan);
+
+    if (sys_lock_record(fd_l, loan_id, F_WRLCK) == 0) {
+        
+        sys_lseek(fd_l, offset, SEEK_SET);
+        if (sys_read(fd_l, &loan_record, sizeof(struct Loan)) != sizeof(struct Loan)) {
+             strcpy(response.data, "Loan ID not found.");
+             goto unlock_and_close;
+        }
+
+        if (action == LOAN_PROCESSED || action == LOAN_APPROVED || action == LOAN_REJECTED) {
+            
+            loan_record.status = action;
+            loan_record.processed_by_id = employee_id;
+
+            sys_lseek(fd_l, offset, SEEK_SET);
+            if (sys_write(fd_l, &loan_record, sizeof(struct Loan)) == sizeof(struct Loan)) {
+                response.success_status = 1;
+                sprintf(response.data, "Loan ID %d marked as %s.", loan_id, 
+                        (action == LOAN_APPROVED) ? "APPROVED" : (action == LOAN_REJECTED) ? "REJECTED" : "PROCESSED");
+            } else {
+                 strcpy(response.data, "Error writing status update.");
+            }
+        } else {
+            strcpy(response.data, "Invalid action code.");
+        }
+        
+        unlock_and_close:;
+        sys_unlock_record(fd_l, loan_id);
+    }
+    sys_close(fd_l);
+    
+    write_response_and_close:;
+    sys_write(client_sd, &response, sizeof(struct Message));
+}
+
+// --- 10. View Assigned Loans (Employee Function) ---
+void serve_view_assigned_loans(int client_sd, struct Message *request) {
+    struct Message response;
+    response.command = CMD_VIEW_ASSIGNED_LOANS;
+    response.success_status = 0; 
+    int assigned_count = 0;
+    int applied_count = 0;
+    
+    int employee_id = request->source_id;
+    int fd_l = sys_open("loans.dat", O_RDONLY);
+    
+    if (fd_l != -1) {
+        struct Loan loan;
+        while (sys_read(fd_l, &loan, sizeof(struct Loan)) == sizeof(struct Loan)) {
+            if (loan.processed_by_id == employee_id) {
+                assigned_count++;
+            } 
+            if (loan.status == LOAN_APPLIED) {
+                applied_count++;
+            }
+        }
+        sys_close(fd_l);
+        
+        response.success_status = 1;
+        sprintf(response.data, "You have %d loans assigned/processing. %d unassigned loans waiting.", assigned_count, applied_count);
+    } else {
+        strcpy(response.data, "Loan file error.");
+    }
+    
     sys_write(client_sd, &response, sizeof(struct Message));
 }

@@ -21,6 +21,7 @@ int server_sd = -1;
 int connect_to_server();
 void client_login_flow(int role);
 void customer_menu_handler();
+void employee_menu_handler(); // New handler for Employee
 // ... other menu handlers
 
 // CRITICAL FIX: The definition of current_user is in utils.c.
@@ -80,117 +81,6 @@ void client_login_flow(int role) {
         sys_write_string("❌ Login Failed: Invalid credentials or deactivated account.\n");
     }
 }
-
-void employee_menu_handler() {
-    char choice_str[10];
-    int choice;
-    struct Message request, response;
-
-    while (current_user.id != 0) {
-        print_menu(EMPLOYEE);
-        get_input(choice_str, sizeof(choice_str));
-        choice = atoi(choice_str);
-
-        switch (choice) {
-            case 1: // Add New Customer
-                {
-                    char username[MAX_NAME_LEN], password[MAX_PASS_LEN];
-                    
-                    sys_write_string("--- Add New Customer ---\n");
-                    sys_write_string("Enter Username: ");
-                    get_input(username, MAX_NAME_LEN);
-                    sys_write_string("Enter Password: ");
-                    get_input(password, MAX_PASS_LEN);
-                    
-                    // NOTE: We only send username and password for now.
-                    // The server uses placeholder data for name, age, address.
-                    request.command = CMD_ADD_CUSTOMER;
-                    request.source_id = current_user.id; // Employee ID
-                    strncpy(request.data, username, MAX_NAME_LEN);
-                    strncpy(request.data + MAX_NAME_LEN, password, MAX_PASS_LEN);
-                    
-                    sys_write(server_sd, &request, sizeof(struct Message));
-                    sys_read(server_sd, &response, sizeof(struct Message));
-                    
-                    if (response.success_status) {
-                        sys_write_string("✅ ");
-                        sys_write_string(response.data);
-                        sys_write_string("\n");
-                    } else {
-                        sys_write_string("❌ Customer creation failed: ");
-                        sys_write_string(response.data);
-                        sys_write_string("\n");
-                    }
-                }
-                break;
-            case 2: // Modify Customer Details
-                {
-                    char target_id_str[10];
-                    char new_name[MAX_NAME_LEN], new_age_str[10], new_address[100];
-                    int target_id;
-                    
-                    sys_write_string("--- Modify Customer Details ---\n");
-                    sys_write_string("Enter Customer ID to modify: ");
-                    get_input(target_id_str, sizeof(target_id_str));
-                    target_id = atoi(target_id_str);
-                    
-                    sys_write_string("Enter NEW Name: ");
-                    get_input(new_name, MAX_NAME_LEN);
-                    sys_write_string("Enter NEW Age: ");
-                    get_input(new_age_str, 10);
-                    sys_write_string("Enter NEW Address: ");
-                    get_input(new_address, 100);
-
-                    // Package data: [Name\0][Age_str\0][Address\0]
-                    request.command = CMD_MODIFY_CUSTOMER;
-                    request.target_id = target_id;
-                    
-                    // Copy Name
-                    strncpy(request.data, new_name, MAX_NAME_LEN);
-                    // Copy Age String (starts at offset MAX_NAME_LEN)
-                    strncpy(request.data + MAX_NAME_LEN, new_age_str, 10);
-                    // Copy Address (starts at offset MAX_NAME_LEN + 10)
-                    strncpy(request.data + MAX_NAME_LEN + 10, new_address, 100);
-                    
-                    sys_write(server_sd, &request, sizeof(struct Message));
-                    sys_read(server_sd, &response, sizeof(struct Message));
-                    
-                    if (response.success_status) {
-                        sys_write_string("✅ ");
-                        sys_write_string(response.data);
-                        sys_write_string("\n");
-                    } else {
-                        sys_write_string("❌ Modification failed: ");
-                        sys_write_string(response.data);
-                        sys_write_string("\n");
-                    }
-                }
-                break;
-
-            case 8: // Logout
-                request.command = CMD_LOGOUT;
-                sys_write(server_sd, &request, sizeof(struct Message));
-                sys_read(server_sd, &response, sizeof(struct Message));
-                
-                if (response.success_status) {
-                    sys_write_string("Logging out...\n");
-                    current_user.id = 0; 
-                } else {
-                    sys_write_string("❌ Logout failed on server.\n");
-                }
-                break;
-                
-            case 9: // Exit
-                sys_write_string("Exiting system. Goodbye!\n");
-                sys_close(server_sd);
-                exit(0);
-
-            default:
-                sys_write_string("Option is not yet implemented.\n");
-        }
-    }
-}
-
 
 void customer_menu_handler() {
     char choice_str[10];
@@ -283,6 +173,63 @@ void customer_menu_handler() {
                     }
                 }
                 break;
+
+            case 5: // Apply for a Loan
+                { 
+                    char amount_str[20], tenure_str[10];
+                    double amount;
+                    int tenure;
+                    
+                    sys_write_string("--- Loan Application ---\n");
+                    sys_write_string("Enter loan amount: ");
+                    get_input(amount_str, sizeof(amount_str));
+                    amount = atof(amount_str);
+                    
+                    sys_write_string("Enter tenure (months): ");
+                    get_input(tenure_str, sizeof(tenure_str));
+                    tenure = atoi(tenure_str);
+
+                    request.command = CMD_APPLY_LOAN;
+                    request.source_id = current_user.id;
+                    request.amount = amount;
+                    request.target_id = tenure; // Repurposing target_id for tenure
+                    
+                    sys_write(server_sd, &request, sizeof(struct Message));
+                    sys_read(server_sd, &response, sizeof(struct Message));
+                    
+                    if (response.success_status) {
+                        sys_write_string("✅ ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    } else {
+                        sys_write_string("❌ Loan application failed: ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    }
+                }
+                break;
+            
+            case 6: // View Loan Status (Customer Option 6 in PDF is Feedback, but View Status is more immediate)
+                {
+                    request.command = CMD_VIEW_LOAN_STATUS;
+                    request.source_id = current_user.id;
+                    
+                    sys_write(server_sd, &request, sizeof(struct Message));
+                    sys_read(server_sd, &response, sizeof(struct Message));
+                    
+                    if (response.success_status) {
+                        sys_write_string("✅ Loan Status: ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    } else {
+                        sys_write_string("ℹ️ ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    }
+                }
+                break;
+            
+            // Note: Option 7 is View Transaction History (TBD)
             
             case 9: // Logout
                 request.command = CMD_LOGOUT;
@@ -307,6 +254,186 @@ void customer_menu_handler() {
         }
     }
 }
+
+void employee_menu_handler() {
+    char choice_str[10];
+    int choice;
+    struct Message request, response;
+
+    while (current_user.id != 0) {
+        print_menu(EMPLOYEE);
+        get_input(choice_str, sizeof(choice_str));
+        choice = atoi(choice_str);
+
+        switch (choice) {
+            case 1: // Add New Customer
+                {
+                    char username[MAX_NAME_LEN], password[MAX_PASS_LEN];
+                    
+                    sys_write_string("--- Add New Customer ---\n");
+                    sys_write_string("Enter Username: ");
+                    get_input(username, MAX_NAME_LEN);
+                    sys_write_string("Enter Password: ");
+                    get_input(password, MAX_PASS_LEN);
+                    
+                    // Package data: [Username\0][Password\0]
+                    request.command = CMD_ADD_CUSTOMER;
+                    request.source_id = current_user.id; // Employee ID
+                    strncpy(request.data, username, MAX_NAME_LEN);
+                    strncpy(request.data + MAX_NAME_LEN, password, MAX_PASS_LEN);
+                    
+                    sys_write(server_sd, &request, sizeof(struct Message));
+                    sys_read(server_sd, &response, sizeof(struct Message));
+                    
+                    if (response.success_status) {
+                        sys_write_string("✅ ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    } else {
+                        sys_write_string("❌ Customer creation failed: ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    }
+                }
+                break;
+
+            case 2: // Modify Customer Details
+                {
+                    char target_id_str[10];
+                    char new_name[MAX_NAME_LEN], new_age_str[10], new_address[100];
+                    int target_id;
+                    
+                    sys_write_string("--- Modify Customer Details ---\n");
+                    sys_write_string("Enter Customer ID to modify: ");
+                    get_input(target_id_str, sizeof(target_id_str));
+                    target_id = atoi(target_id_str);
+                    
+                    sys_write_string("Enter NEW Name: ");
+                    get_input(new_name, MAX_NAME_LEN);
+                    sys_write_string("Enter NEW Age: ");
+                    get_input(new_age_str, 10);
+                    sys_write_string("Enter NEW Address: ");
+                    get_input(new_address, 100);
+
+                    // Package data: [Name\0][Age_str\0][Address\0]
+                    request.command = CMD_MODIFY_CUSTOMER;
+                    request.target_id = target_id;
+                    
+                    // Copy Name
+                    strncpy(request.data, new_name, MAX_NAME_LEN);
+                    // Copy Age String (starts at offset MAX_NAME_LEN)
+                    strncpy(request.data + MAX_NAME_LEN, new_age_str, 10);
+                    // Copy Address (starts at offset MAX_NAME_LEN + 10)
+                    strncpy(request.data + MAX_NAME_LEN + 10, new_address, 100);
+                    
+                    sys_write(server_sd, &request, sizeof(struct Message));
+                    sys_read(server_sd, &response, sizeof(struct Message));
+                    
+                    if (response.success_status) {
+                        sys_write_string("✅ ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    } else {
+                        sys_write_string("❌ Modification failed: ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    }
+                }
+                break;
+                
+            case 5: // View Assigned Loan Applications
+                {
+                    request.command = CMD_VIEW_ASSIGNED_LOANS;
+                    request.source_id = current_user.id;
+                    
+                    sys_write(server_sd, &request, sizeof(struct Message));
+                    sys_read(server_sd, &response, sizeof(struct Message));
+                    
+                    if (response.success_status) {
+                        sys_write_string("ℹ️ Loans Summary: ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    } else {
+                        sys_write_string("❌ Failed to retrieve loan summary: ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    }
+                }
+                break;
+            
+            case 3: // Process Loan Applications (Intermediate review)
+            case 4: // Approve/Reject Loans (Final decision)
+                {
+                    char loan_id_str[10];
+                    int loan_id, action_code;
+                    
+                    sys_write_string("--- Loan Processing ---\n");
+                    
+                    // Option 5 should be run first to see pending loans
+                    sys_write_string("Enter Loan ID to process/change status: ");
+                    get_input(loan_id_str, sizeof(loan_id_str));
+                    loan_id = atoi(loan_id_str);
+                    
+                    if (choice == 3) {
+                         // Process/Review (Intermediate status)
+                         action_code = LOAN_PROCESSED;
+                         sys_write_string("Loan will be marked as PROCESSED.\n");
+                    } else {
+                        // Approve/Reject (Final Status)
+                        char action_str[10];
+                        sys_write_string("Approve (3) or Reject (4)? Enter code: ");
+                        get_input(action_str, sizeof(action_str));
+                        action_code = atoi(action_str);
+                        if (action_code != LOAN_APPROVED && action_code != LOAN_REJECTED) {
+                            sys_write_string("Invalid action code (must be 3 or 4). Returning to menu.\n");
+                            break;
+                        }
+                    }
+
+                    request.command = CMD_PROCESS_LOAN;
+                    request.source_id = current_user.id; // Employee ID
+                    request.target_id = loan_id;
+                    request.amount = (double)action_code; // Repurpose amount for action code
+                    
+                    sys_write(server_sd, &request, sizeof(struct Message));
+                    sys_read(server_sd, &response, sizeof(struct Message));
+
+                    if (response.success_status) {
+                        sys_write_string("✅ ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    } else {
+                        sys_write_string("❌ Processing failed: ");
+                        sys_write_string(response.data);
+                        sys_write_string("\n");
+                    }
+                }
+                break;
+
+            case 8: // Logout
+                request.command = CMD_LOGOUT;
+                sys_write(server_sd, &request, sizeof(struct Message));
+                sys_read(server_sd, &response, sizeof(struct Message));
+                
+                if (response.success_status) {
+                    sys_write_string("Logging out...\n");
+                    current_user.id = 0; 
+                } else {
+                    sys_write_string("❌ Logout failed on server.\n");
+                }
+                break;
+                
+            case 9: // Exit
+                sys_write_string("Exiting system. Goodbye!\n");
+                sys_close(server_sd);
+                exit(0);
+
+            default:
+                sys_write_string("Option is not yet implemented.\n");
+        }
+    }
+}
+
 
 int main() {
     char choice_str[10];
@@ -339,11 +466,10 @@ int main() {
                         case CUSTOMER:
                             customer_menu_handler();
                             break;
-                        case EMPLOYEE: // <-- CHANGE THIS CASE
-                            employee_menu_handler(); // <-- Ensure this is called
+                        case EMPLOYEE:
+                            employee_menu_handler();
                             break;
-                        case MANAGER:
-                        case ADMINISTRATOR:
+                        // TODO: Add handlers for Manager, Admin
                         default:
                             sys_write_string("[CLIENT] Role menu not yet implemented.\n");
                             current_user.id = 0; 

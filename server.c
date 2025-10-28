@@ -71,7 +71,33 @@ void handle_client(int client_sd) {
                     sys_write_string("[SERVER] Unauthorized attempt to view balance.\n");
                 }
                 break;
+            case CMD_APPLY_LOAN:
+            case CMD_VIEW_LOAN_STATUS:
+                if (logged_in && current_user.role == CUSTOMER) {
+                    if (request.command == CMD_APPLY_LOAN) {
+                        serve_apply_loan(client_sd, &request);
+                    } else {
+                        serve_view_loan_status(client_sd, &request);
+                    }
+                    continue; 
+                } else {
+                    sys_write_string("[SERVER] Unauthorized loan request.\n");
+                }
+                break;
 
+            // --- NEW: Employee Loan Commands ---
+            case CMD_PROCESS_LOAN:
+            case CMD_VIEW_ASSIGNED_LOANS:
+                if (logged_in && current_user.role == EMPLOYEE) {
+                    if (request.command == CMD_PROCESS_LOAN) {
+                        serve_process_loan(client_sd, &request);
+                    } else {
+                        serve_view_assigned_loans(client_sd, &request);
+                    }
+                    continue; 
+                } else {
+                    sys_write_string("[SERVER] Unauthorized loan processing request.\n");
+                }
             case CMD_DEPOSIT:
             case CMD_WITHDRAW:
                 if (logged_in && current_user.role == CUSTOMER) {
